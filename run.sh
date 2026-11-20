@@ -47,6 +47,8 @@ elif [ -f /etc/os-release ]; then
     # shellcheck source=/dev/null
     . /etc/os-release
     DISTRO="${ID:-unknown}"
+elif [[ "$(uname -s)" =~ ^(MINGW|MSYS|CYGWIN) ]]; then
+    OS="windows"
 fi
 
 run_pkg_mgr() {
@@ -75,65 +77,76 @@ is_node_supported() {
 # ─── 1. Ensure / Upgrade Python & Build Essentials ───────────────────────────
 echo -e "${BLUE}[1/5] Verifying Python runtime (minimum ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+)...${NC}"
 
-PYTHON_CMD="python3"
-if ! is_python_supported "python3"; then
-    # Check if specific modern binary exists (e.g. python3.12, python3.11)
-    if is_python_supported "python3.13"; then
-        PYTHON_CMD="python3.13"
-    elif is_python_supported "python3.12"; then
-        PYTHON_CMD="python3.12"
-    elif is_python_supported "python3.11"; then
-        PYTHON_CMD="python3.11"
-    else
-        echo -e "${YELLOW}Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR} not detected. Attempting automatic installation/upgrade...${NC}"
+PYTHON_CMD=""
+for cmd in python3 python py; do
+    if is_python_supported "$cmd"; then
+        PYTHON_CMD="$cmd"
+        break
+    fi
+done
 
-        if [ "$OS" = "linux" ]; then
-            case "$DISTRO" in
-                ubuntu|debian|pop|mint)
+if [ -z "$PYTHON_CMD" ]; then
+    for cmd in python3.15 python3.14 python3.13 python3.12 python3.11; do
+        if is_python_supported "$cmd"; then
+            PYTHON_CMD="$cmd"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "${YELLOW}Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR} not detected. Attempting automatic installation/upgrade...${NC}"
+
+    if [ "$OS" = "linux" ]; then
+        case "$DISTRO" in
+            ubuntu|debian|pop|mint)
+                $SUDO apt-get update -y
+                $SUDO apt-get install -y software-properties-common curl git build-essential
+                if [ "$DISTRO" = "ubuntu" ]; then
+                    $SUDO add-apt-repository -y ppa:deadsnakes/ppa || true
                     $SUDO apt-get update -y
-                    $SUDO apt-get install -y software-properties-common curl git build-essential
-                    if [ "$DISTRO" = "ubuntu" ]; then
-                        $SUDO add-apt-repository -y ppa:deadsnakes/ppa || true
-                        $SUDO apt-get update -y
-                    fi
-                    $SUDO apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip || \
-                    $SUDO apt-get install -y python3 python3-venv python3-pip python3-dev
-                    if command -v python3.12 &>/dev/null; then
-                        PYTHON_CMD="python3.12"
-                    fi
-                    ;;
-                fedora|rhel|centos|rocky|almalinux)
-                    PKG_TOOL=$(command -v dnf || command -v yum)
-                    $SUDO $PKG_TOOL install -y python3.12 python3.12-pip python3.12-devel || \
-                    $SUDO $PKG_TOOL install -y python3 python3-pip python3-devel gcc git curl
-                    if command -v python3.12 &>/dev/null; then
-                        PYTHON_CMD="python3.12"
-                    fi
-                    ;;
-                arch|manjaro)
-                    $SUDO pacman -Sy --noconfirm python python-pip base-devel git curl
-                    ;;
-                alpine)
-                    $SUDO apk update
-                    $SUDO apk add --no-cache python3 py3-pip python3-dev gcc musl-dev linux-headers git curl
-                    ;;
-                *)
-                    echo -e "${RED}Unsupported Linux distribution: ${DISTRO}.${NC}"
-                    echo -e "${RED}Please install Python >= 3.11 manually with your package manager.${NC}"
-                    exit 1
-                    ;;
-            esac
-        elif [ "$OS" = "macos" ]; then
-            if ! command -v brew &>/dev/null; then
-                echo -e "${RED}Homebrew is required to auto-install dependencies on macOS.${NC}"
+                fi
+                $SUDO apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip || \
+                $SUDO apt-get install -y python3 python3-venv python3-pip python3-dev
+                if command -v python3.12 &>/dev/null; then
+                    PYTHON_CMD="python3.12"
+                fi
+                ;;
+            fedora|rhel|centos|rocky|almalinux)
+                PKG_TOOL=$(command -v dnf || command -v yum)
+                $SUDO $PKG_TOOL install -y python3.12 python3.12-pip python3.12-devel || \
+                $SUDO $PKG_TOOL install -y python3 python3-pip python3-devel gcc git curl
+                if command -v python3.12 &>/dev/null; then
+                    PYTHON_CMD="python3.12"
+                fi
+                ;;
+            arch|manjaro)
+                $SUDO pacman -Sy --noconfirm python python-pip base-devel git curl
+                ;;
+            alpine)
+                $SUDO apk update
+                $SUDO apk add --no-cache python3 py3-pip python3-dev gcc musl-dev linux-headers git curl
+                ;;
+            *)
+                echo -e "${RED}Unsupported Linux distribution: ${DISTRO}.${NC}"
+                echo -e "${RED}Please install Python >= 3.11 manually with your package manager.${NC}"
                 exit 1
-            fi
-            brew install python@3.12
-            PYTHON_CMD="$(brew --prefix)/bin/python3.12"
-        else
-            echo -e "${RED}Unrecognized operating system. Please install Python >= 3.11 manually.${NC}"
+                ;;
+        esac
+    elif [ "$OS" = "macos" ]; then
+        if ! command -v brew &>/dev/null; then
+            echo -e "${RED}Homebrew is required to auto-install dependencies on macOS.${NC}"
             exit 1
         fi
+        brew install python@3.12
+        PYTHON_CMD="$(brew --prefix)/bin/python3.12"
+    elif [ "$OS" = "windows" ]; then
+        echo -e "${RED}Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR} not detected on Windows.${NC}"
+        echo -e "${RED}Please install Python from https://www.python.org/downloads/ or through winget: winget install Python.Python.3.12${NC}"
+        exit 1
+    else
+        echo -e "${RED}Unrecognized operating system. Please install Python >= 3.11 manually.${NC}"
+        exit 1
     fi
 fi
 
@@ -181,6 +194,9 @@ if ! is_node_supported; then
     elif [ "$OS" = "macos" ]; then
         brew install node@20
         brew link --overwrite node@20 || true
+    elif [ "$OS" = "windows" ]; then
+        echo -e "${RED}Node.js not detected. Please install Node.js >= 18.18 / 20 LTS from https://nodejs.org/${NC}"
+        exit 1
     fi
 fi
 
@@ -194,12 +210,29 @@ echo -e "${GREEN}✓ Using Node.js: $(node -v) with npm $(npm -v)${NC}"
 # ─── 3. Backend Virtualenv & Dependencies ─────────────────────────────────────
 echo -e "${BLUE}[3/5] Setting up backend Python virtual environment...${NC}"
 
+# Helper to find virtualenv binary directory across platforms
+get_venv_bin() {
+    local venv_path="$1"
+    if [ -d "${venv_path}/Scripts" ]; then
+        echo "${venv_path}/Scripts"
+    elif [ -d "${venv_path}/bin" ]; then
+        echo "${venv_path}/bin"
+    elif [ "$OS" = "windows" ]; then
+        echo "${venv_path}/Scripts"
+    else
+        echo "${venv_path}/bin"
+    fi
+}
+
 # If venv is missing or was created with an incompatible python, recreate it
 RECREATE_VENV=false
-if [ ! -d "${VENV_DIR}" ] || [ ! -f "${VENV_DIR}/bin/python" ]; then
+if [ ! -d "${VENV_DIR}" ]; then
     RECREATE_VENV=true
 else
-    if ! is_python_supported "${VENV_DIR}/bin/python"; then
+    CURRENT_VENV_BIN="$(get_venv_bin "${VENV_DIR}")"
+    if [ ! -f "${CURRENT_VENV_BIN}/python" ] && [ ! -f "${CURRENT_VENV_BIN}/python.exe" ]; then
+        RECREATE_VENV=true
+    elif ! is_python_supported "${CURRENT_VENV_BIN}/python"; then
         echo -e "${YELLOW}Existing virtualenv uses incompatible Python. Recreating with ${PYTHON_CMD}...${NC}"
         rm -rf "${VENV_DIR}"
         RECREATE_VENV=true
@@ -211,21 +244,28 @@ if [ "$RECREATE_VENV" = true ]; then
     "$PYTHON_CMD" -m venv "${VENV_DIR}"
 fi
 
+VENV_BIN="$(get_venv_bin "${VENV_DIR}")"
+VENV_PYTHON="${VENV_BIN}/python"
+VENV_PIP="${VENV_BIN}/pip"
+VENV_ACTIVATE="${VENV_BIN}/activate"
+
 # Explicitly activate virtualenv & put its binaries first in PATH
 VIRTUAL_ENV="${VENV_DIR}"
 export VIRTUAL_ENV
-PATH="${VENV_DIR}/bin:${PATH}"
+PATH="${VENV_BIN}:${PATH}"
 export PATH
 # shellcheck source=/dev/null
-source "${VENV_DIR}/bin/activate"
+if [ -f "${VENV_ACTIVATE}" ]; then
+    source "${VENV_ACTIVATE}"
+fi
 
-echo -e "${GREEN}✓ Virtual environment activated: ${VENV_DIR} ($("${VENV_DIR}/bin/python" --version))${NC}"
+echo -e "${GREEN}✓ Virtual environment activated: ${VENV_DIR} ($("${VENV_PYTHON}" --version))${NC}"
 
 # Ensure pip is up to date and dependencies are installed
-if ! "${VENV_DIR}/bin/python" -c "import django, rest_framework, rest_framework_simplejwt, corsheaders" &>/dev/null; then
+if ! "${VENV_PYTHON}" -c "import django, rest_framework, rest_framework_simplejwt, corsheaders" &>/dev/null; then
     echo -e "${YELLOW}Installing backend dependencies from requirements.txt...${NC}"
-    "${VENV_DIR}/bin/pip" install --upgrade pip
-    "${VENV_DIR}/bin/pip" install -r "${BACKEND_DIR}/requirements.txt"
+    "${VENV_PIP}" install --upgrade pip
+    "${VENV_PIP}" install -r "${BACKEND_DIR}/requirements.txt"
 fi
 
 # Ensure backend .env exists
@@ -246,11 +286,11 @@ fi
 
 # Apply database migrations
 echo -e "${BLUE}Applying backend database migrations...${NC}"
-"${VENV_DIR}/bin/python" "${BACKEND_DIR}/manage.py" migrate --noinput
+"${VENV_PYTHON}" "${BACKEND_DIR}/manage.py" migrate --noinput
 
 # Seed demo workforce accounts and perishable catalog
 echo -e "${BLUE}Ensuring demo accounts and inventory are seeded...${NC}"
-"${VENV_DIR}/bin/python" "${BACKEND_DIR}/manage.py" seed_employees
+"${VENV_PYTHON}" "${BACKEND_DIR}/manage.py" seed_employees
 
 # Ensure media directory exists
 mkdir -p "${BACKEND_DIR}/media/profile_pictures"
@@ -313,7 +353,7 @@ trap cleanup SIGINT SIGTERM EXIT
 
 # Start Django Backend on 0.0.0.0:8005 (allow VPS IP access)
 export ALLOWED_HOSTS="${ALLOWED_HOSTS:-*},localhost,127.0.0.1,${HOST_IP}"
-"${VENV_DIR}/bin/python" "${BACKEND_DIR}/manage.py" runserver 0.0.0.0:8005 2>&1 | sed -e "s/^/[BACKEND] /" &
+"${VENV_PYTHON}" "${BACKEND_DIR}/manage.py" runserver 0.0.0.0:8005 2>&1 | sed -e "s/^/[BACKEND] /" &
 BACKEND_PID=$!
 
 # Start Next.js Frontend bound to 0.0.0.0:3000
